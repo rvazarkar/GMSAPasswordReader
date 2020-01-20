@@ -1,38 +1,72 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.DirectoryServices.Protocols;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Runtime.Remoting.Messaging;
+using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
+using CommandLine;
 
 namespace GMSAPasswordReader
 {
-    internal static class Extensions
-    {
-        public static byte[] GetPropertyAsBytes(this SearchResultEntry searchResultEntry, string property)
-        {
-            if (!searchResultEntry.Attributes.Contains(property))
-                return null;
-
-            var collection = searchResultEntry.Attributes[property];
-            var lookups = collection.GetValues(typeof(byte[]));
-            if (lookups.Length == 0)
-                return null;
-
-            if (!(lookups[0] is byte[] bytes) || bytes.Length == 0)
-                return null;
-
-            return bytes;
-        }
-    }
     internal class GMSAReader
     {
         static void Main(string[] args)
         {
+            Options options = null;
 
+            var parser = new Parser(with =>
+            {
+                with.CaseSensitive = false;
+                with.HelpWriter = Console.Error;
+            });
+
+            parser.ParseArguments<Options>(args)
+                .WithParsed<Options>(o => { options = o; });
+
+            parser.Dispose();
+
+            if (options == null)
+            {
+                return;
+            }
+
+            string domainName = null, target = null;
+
+            if (options.DomainName == null)
+            {
+                domainName = GetDomainName(options.DomainName);
+            }
+
+            target = options.DomainController ?? domainName;
+
+            domainName = $"DC={domainName.Replace(".", ",DC=")}";
+
+            
+
+            var blob = SearchLdap(options.AccountName, domainName, target, options.LdapPort);
+            if (blob == null)
+            {
+                Console.WriteLine("Unable to retrieve password blob. Check permissions/account name");
+                return;
+            }
+
+            var managedPassword = new MsDsManagedPassword(blob);
+            //CreateNTLMHash(managedPassword.OldPassword);
+            CreateNTLMHash(managedPassword.CurrentPassword);
         }
 
-        private static string GetDomainName(string domain=null)
+        private static string CreateNTLMHash(string password)
+        {
+            var ntlm = password.MD4().AsHexString();
+            Console.WriteLine(ntlm);
+            return ntlm;
+        }
+
+        private static string GetDomainName(string domain)
         {
             var result = DsGetDcName(null, domain, null, null, DSGETDCNAME_FLAGS.DS_DIRECTORY_SERVICE_REQUIRED | DSGETDCNAME_FLAGS.DS_RETURN_DNS_NAME,
                 out var pDCI);
@@ -58,18 +92,20 @@ namespace GMSAPasswordReader
             
         }
 
-        private static byte[] SearchLdap(string accountName, string target, int port=389)
+        private static byte[] SearchLdap(string accountName, string domainName, string target, int port)
         {
-            var identifier = new LdapDirectoryIdentifier(target, port, false, false); 
-            var connection = new LdapConnection(identifier);
+            var identifier = new LdapDirectoryIdentifier(target, port, false, false);
+            var connection = new LdapConnection(identifier) {AuthType = AuthType.Negotiate};
+
             var cso = connection.SessionOptions;
 
             //Necessary to get password blobs back
             cso.Signing = true;
             cso.Sealing = true;
+            cso.RootDseCache = true;
 
-            var filter = $"(&(|(samaccountname={accountName}$)(samaccountname={accountName}))(objectClass=msDS-ManagedServiceAccount))";
-            var searchRequest = new SearchRequest(null, filter, SearchScope.Subtree, "sAMAccountName", "msDS-ManagedPassword");
+            var filter = $"(&(|(sAMAccountName={accountName}$)(sAMAccountName={accountName}))(msds-groupmsamembership=*))";
+            var searchRequest = new SearchRequest(domainName, filter, SearchScope.Subtree, "sAMAccountName", "msDS-ManagedPassword");
             try
             {
                 var searchResponse = (SearchResponse)connection.SendRequest(searchRequest);
