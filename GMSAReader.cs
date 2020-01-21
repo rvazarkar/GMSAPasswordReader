@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Remoting.Messaging;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using CommandLine;
 
@@ -14,6 +15,8 @@ namespace GMSAPasswordReader
 {
     internal class GMSAReader
     {
+        private static readonly Regex DCReplaceRegex = new Regex("DC=", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
         static void Main(string[] args)
         {
             Options options = null;
@@ -30,9 +33,7 @@ namespace GMSAPasswordReader
             parser.Dispose();
 
             if (options == null)
-            {
                 return;
-            }
 
             string domainName = null, target = null;
 
@@ -47,23 +48,33 @@ namespace GMSAPasswordReader
 
             
 
-            var blob = SearchLdap(options.AccountName, domainName, target, options.LdapPort);
-            if (blob == null)
+            var gmsa = SearchLdap(options.AccountName, domainName, target, options.LdapPort);
+            if (gmsa == null)
             {
                 Console.WriteLine("Unable to retrieve password blob. Check permissions/account name");
                 return;
             }
 
-            var managedPassword = new MsDsManagedPassword(blob);
-            //CreateNTLMHash(managedPassword.OldPassword);
-            CreateNTLMHash(managedPassword.CurrentPassword);
+            var managedPassword = new MsDsManagedPassword(gmsa.PasswordBlob);
+
+            if (managedPassword.OldPassword != null)
+            {
+                Console.WriteLine("Calculating hashes for Old Value");
+                Extensions.ComputeAllKerberosPasswordHashes(managedPassword.OldPassword, gmsa.AccountName, gmsa.DomainName);
+            }
+            
+            Console.WriteLine("Calculating hashes for Current Value");
+            Extensions.ComputeAllKerberosPasswordHashes(managedPassword.CurrentPassword, gmsa.AccountName, gmsa.DomainName);
+
         }
 
         private static string CreateNTLMHash(string password)
         {
-            var ntlm = password.MD4().AsHexString();
-            Console.WriteLine(ntlm);
-            return ntlm;
+            if (password == null)
+                return null;
+
+            var hash = Extensions.KerberosPasswordHash(Interop.KERB_ETYPE.rc4_hmac, password);
+            return hash;
         }
 
         private static string GetDomainName(string domain)
@@ -92,7 +103,15 @@ namespace GMSAPasswordReader
             
         }
 
-        private static byte[] SearchLdap(string accountName, string domainName, string target, int port)
+        private static string ConvertDNToDomain(string distinguishedName)
+        {
+            var temp = distinguishedName.Substring(distinguishedName.IndexOf("DC=",
+                StringComparison.CurrentCultureIgnoreCase));
+            temp = DCReplaceRegex.Replace(temp, "").Replace(",", ".").ToUpper();
+            return temp;
+        }
+
+        private static GMSA SearchLdap(string accountName, string domainName, string target, int port)
         {
             var identifier = new LdapDirectoryIdentifier(target, port, false, false);
             var connection = new LdapConnection(identifier) {AuthType = AuthType.Negotiate};
@@ -122,7 +141,14 @@ namespace GMSAPasswordReader
                     var passwordBlob = entry.GetPropertyAsBytes("msDS-ManagedPassword");
                     if (passwordBlob != null)
                     {
-                        return passwordBlob;
+                        var newDomainName = ConvertDNToDomain(entry.DistinguishedName);
+                        var newAccountName = entry.GetProperty("samaccountname");
+                        return new GMSA
+                        {
+                            AccountName = newAccountName,
+                            DomainName = newDomainName,
+                            PasswordBlob = passwordBlob
+                        };
                     }
                 }
 
