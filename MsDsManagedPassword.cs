@@ -73,26 +73,5 @@ namespace GMSAPasswordReader
 
             return null;
         }
-
-        private byte[] GetUnicodeBytes(byte[] blob, int index)
-        {
-            var stOut = new List<byte>();
-
-            for (var i = index; i < blob.Length; i += 2)
-            {
-                var b = blob[i];
-                var ch = BitConverter.ToChar(blob, i);
-
-                if (ch == char.MinValue)
-                {
-                    //found the end  .    A null-terminated WCHAR string
-                    return stOut.ToArray();
-                }
-
-                stOut.Add(b);
-            }
-
-            return null;
-        }
     }
 }
