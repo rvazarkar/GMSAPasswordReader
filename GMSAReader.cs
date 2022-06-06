@@ -41,6 +41,10 @@ namespace GMSAPasswordReader
             {
                 domainName = GetDomainName(options.DomainName);
             }
+	    else 
+	    {
+                domainName = options.DomainName;
+	    }
 
             target = options.DomainController ?? domainName;
 
