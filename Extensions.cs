@@ -60,7 +60,7 @@ namespace GMSAPasswordReader
                 return;
             }
             
-            var salt = $"{domainName.ToUpper()}{userName}";
+            var salt = $"{domainName.ToUpper()}host{userName.Remove(userName.Length -1,1).ToLower()}.{domainName.ToLower()}";
 
             if (!string.IsNullOrEmpty(userName) && !string.IsNullOrEmpty(domainName))
             {
